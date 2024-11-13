@@ -222,7 +222,7 @@ def skills(skills: str, data_inicial: str, data_final: str, export_csv: bool = F
 
         # Validar se a skills_list é uma lista não vazia
         if not skills_list or not isinstance(skills_list, list):
-            typer.echo("Erro: A lista de skills deve ser uma lista válida.")
+            print("Erro: A lista de skills deve ser uma lista válida.")
             return
 
         # Convertendo as datas para o formato datetime
@@ -231,7 +231,7 @@ def skills(skills: str, data_inicial: str, data_final: str, export_csv: bool = F
 
         # Validar as datas
         if start_date > end_date:
-            typer.echo("Erro: A data inicial não pode ser posterior à data final.")
+            print("Erro: A data inicial não pode ser posterior à data final.")
             return
 
         headers = {"User-Agent": "jobs-cli"}
@@ -261,28 +261,33 @@ def skills(skills: str, data_inicial: str, data_final: str, export_csv: bool = F
 
         # Exibir os resultados em formato JSON
         if not filtered_jobs:
-            typer.echo("Nenhum trabalho encontrado para as skills e período especificados.")
+            print("Nenhum trabalho encontrado para as skills e período especificados.")
             return
 
         if export_csv:
             export_to_csv(filtered_jobs, "filtered_jobs.csv")
 
-        # Exibir os resultados em formato JSON
-        typer.echo(json.dumps(filtered_jobs, indent=2, ensure_ascii=False))
-        
-        
+        # Exibir os resultados em formato mais legível
         for job in filtered_jobs:
-            print(f"\nTítulo: {job['title']}")
-            print(f"Empresa: {job['company']['name']}")
-            print(f"Localização: {', '.join(location['name'] for location in job['locations'])}")
-            print(f"Data de Publicação: {job['publishedAt'].split(' ')[0]}")
-            print(f"Link: https://www.itjobs.pt/oferta/{job['id']}")
+            title = job.get('title', 'N/A')
+            company = job.get('company', {}).get('name', 'N/A')
+            description = job.get('body', 'N/A')
+            publication_date = job.get('publishedAt', 'N/A').split(' ')[0]
+            salary = job.get('wage', 'N/A')
+            location = ', '.join(location['name'] for location in job.get('locations', []))
+
+            print(f"Título: {title}")
+            print(f"Empresa: {company}")
+            print(f"Descrição: {description}")
+            print(f"Data de Publicação: {publication_date}")
+            print(f"Salário: {salary}")
+            print(f"Localização: {location}")
             print("-" * 50)
 
     except requests.RequestException as e:
-        typer.echo(f"Erro ao acessar a API: {e}")
+        print(f"Erro ao acessar a API: {e}")
     except Exception as e:
-        typer.echo(f"Erro inesperado: {e}")
+        print(f"Erro inesperado: {e}")
 
 def export_to_csv(jobs, filename):
     """Exporta a lista de jobs para um arquivo CSV."""
