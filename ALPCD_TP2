@@ -1,1 +1,426 @@
+import requests
+from bs4 import BeautifulSoup
+import typer
+import csv
+import json
+import re
+from collections import defaultdict
 
+
+app = typer.Typer()
+
+BASE_URL = "https://www.ambitionbox.com/list-of-companies?campaign=desktop_nav"
+API_KEY = "09ad1042ebaf1704533805cd2fab64f1"
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:98.0) Gecko/20100101 Firefox/98.0",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5",
+        "Accept-Encoding": "gzip, deflate",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1",
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "none",
+        "Sec-Fetch-User": "?1",
+        "Cache-Control": "max-age=0"}
+
+ZONE_MAPPING = {
+    "2": "Açores",
+    "1": "Aveiro",
+    "3": "Beja",
+    "4": "Braga",
+    "5": "Bragança",
+    "6": "Castelo Branco",
+    "8": "Coimbra",
+    "10": "Évora",
+    "9": "Faro",
+    "11": "Guarda",
+    "29": "Internacional",
+    "13": "Leiria",
+    "14": "Lisboa",
+    "15": "Madeira",
+    "12": "Portalegre",
+    "18": "Porto",
+    "20": "Santarém",
+    "17": "Setúbal",
+    "22": "Viana do Castelo",
+    "21": "Vila Real",
+    "16": "Viseu"
+}
+
+def fetch_job_details(job_id: int):
+    """
+    Busca detalhes de um trabalho usando a API ITJobs.
+    """
+    url = f"https://api.itjobs.pt/job/get.json?api_key={API_KEY}&id={job_id}"
+    try:
+        response = requests.get(url, headers=HEADERS)
+        response.raise_for_status()
+        return response.json()
+    except requests.RequestException as e:
+        typer.echo(f"Erro ao acessar a API ITJobs: {e}")
+        return None
+
+def fetch_company_info(company_name: str):
+    """
+    Obtém informações sobre a empresa usando a página overview do AmbitionBox.
+    """
+    company_slug = company_name.lower().replace(" ", "-").replace(".", "-")
+    url = f"https://www.ambitionbox.com/overview/{company_slug}-overview"
+
+    try:
+        response = requests.get(url, headers=HEADERS)
+        if response.status_code != 200:
+            typer.echo(f"Erro ao acessar {url}. Status Code: {response.status_code}")
+            return {
+                "rating": "N/A",
+                "description": "Informações indisponíveis",
+                "benefits": "Informações indisponíveis"
+            }
+
+        soup = BeautifulSoup(response.content, 'html.parser')
+
+        # Procurar rating
+        rating_tag = soup.find("span", class_="css-1jxf684 text-primary-text font-pn-700 text-[32px]")
+        rating = rating_tag.text.strip() if rating_tag else "N/A"
+
+        # Procurar descrição
+        description_tag = soup.find("div", class_="css-146c3p1 font-pn-400 text-sm text-neutral mb-2")
+        description = description_tag.text.strip() if description_tag else "Informações indisponíveis"
+
+        # Procurar benefícios
+        benefits_tags = soup.find_all("div", class_="css-146c3p1 font-pn-400 text-sm text-primary-text")
+        benefits = [benefit.text.strip() for benefit in benefits_tags]
+        benefits = ", ".join(benefits) if benefits else "Informações indisponíveis"
+
+        return {
+            "rating": rating,
+            "description": description,
+            "benefits": benefits
+        }
+
+    except requests.RequestException as e:
+        typer.echo(f"Erro ao acessar o AmbitionBox: {e}")
+        return {
+            "rating": "N/A",
+            "description": "Informações indisponíveis",
+            "benefits": "Informações indisponíveis"
+        }
+
+@app.command("get")  # Adicionado este decorator
+def get(job_id: int = typer.Argument(..., help="ID do trabalho a ser consultado"), export_csv: bool = False):
+    """
+    Busca informações de um trabalho usando o ITJobs e complementa com dados da empresa no AmbitionBox.
+    
+    Arguments:
+        job_id: ID do trabalho a ser consultado.
+        export_csv: Se verdadeiro, salva os resultados em um arquivo CSV.
+    """
+    job_details = fetch_job_details(job_id)
+    if not job_details or 'error' in job_details:
+        typer.echo(f"Trabalho com ID {job_id} não encontrado.")
+        return
+
+    company_name = job_details.get("company", {}).get("name", "N/A")
+    company_info = fetch_company_info(company_name)
+
+    result = {
+        "job_id": job_id,
+        "title": job_details.get("title", "N/A"),
+        "company": company_name,
+        "location": job_details.get("locations", [{}])[0].get("name", "N/A"),
+        **company_info
+    }
+
+    typer.echo(json.dumps(result, indent=4, ensure_ascii=False))
+
+    if export_csv:
+        with open(f"job_{job_id}_details.csv", "w", newline="", encoding="utf-8") as csvfile:
+            writer = csv.DictWriter(csvfile, fieldnames=result.keys())
+            writer.writeheader()
+            writer.writerow(result)
+        typer.echo(f"Informações exportadas para job_{job_id}_details.csv")
+
+
+# Função para buscar informações da empresa no AmbitionBox
+def fetch_page_content(page_number):
+    """Faz uma requisição HTTP e retorna o conteúdo da página."""
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/90.0 Safari/537.36"
+    }
+    params = {"page": page_number}
+    response = requests.get(BASE_URL, headers=headers, params=params)
+    if response.status_code == 200:
+        return response.content
+    else:
+        print(f"Erro ao acessar a página {page_number}: {response.status_code}")
+        return None
+
+def parse_job_links(page_content):
+    """Extrai os links das vagas disponíveis na página."""
+    soup = BeautifulSoup(page_content, "html.parser")
+    job_links = []
+    for meta_tag in soup.find_all("meta", {"itemprop": "url"}):
+        if meta_tag.get("content"):
+            job_links.append(meta_tag["content"])
+    return job_links
+
+def extract_job_details(job_url):
+    """Coleta os detalhes de uma vaga específica."""
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/90.0 Safari/537.36"
+    }
+    response = requests.get(job_url, headers=headers)
+    if response.status_code == 200:
+        soup = BeautifulSoup(response.content, "html.parser")
+        try:
+            title = soup.select_one("h1.desig.bold-title").text.strip()
+            location = soup.select_one("div.entity.loc p.body-small-l").text.strip()
+            vacancies = soup.select_one("div.entity.vacancy p.body-small-l").text.strip()
+            vacancy_count = int(vacancies.split()[0])
+            return title, location, vacancy_count
+        except AttributeError:
+            print(f"Detalhes não encontrados para {job_url}")
+            return None
+    else:
+        print(f"Erro ao acessar {job_url}: {response.status_code}")
+        return None
+
+def consolidate_job_data(job_data):
+    """Consolida as informações das vagas em um formato agrupado."""
+    summary = {}
+    for location, title, vacancies in job_data:
+        key = (location, title)
+        if key in summary:
+            summary[key] += vacancies
+        else:
+            summary[key] = vacancies
+    return summary
+
+def save_to_csv(data, filename="job_statistics.csv"):
+    """Salva os dados consolidados em um arquivo CSV."""
+    with open(filename, mode="w", newline="", encoding="utf-8") as csvfile:
+        writer = csv.writer(csvfile)
+        writer.writerow(["Zona", "Tipo de Trabalho", "Nº de Vagas"])
+        for (location, title), vacancies in data.items():
+            writer.writerow([location, title, vacancies])
+    print(f"Arquivo {filename} gerado com sucesso!")
+
+@app.command()
+def statistics(zone: str):
+    """
+    Gera um relatório de vagas filtrando por uma zona específica.
+    
+    - `zone`: Nome da zona para filtrar as vagas (ex: Lisboa, Porto).
+    """
+    all_jobs = []
+    page = 1
+
+    while True:
+        print(f"Processando página {page}...")
+        page_content = fetch_page_content(page)
+        if not page_content:
+            break
+
+        job_links = parse_job_links(page_content)
+        if not job_links:
+            break
+
+        for job_link in job_links:
+            job_details = extract_job_details(job_link)
+            if job_details:
+                title, location, vacancies = job_details
+                regions = [region.strip() for region in location.split(",")]
+                for region in regions:
+                    if zone.lower() in region.lower():
+                        all_jobs.append((region, title, vacancies))
+        page += 1
+
+    if all_jobs:
+        consolidated_data = consolidate_job_data(all_jobs)
+        save_to_csv(consolidated_data)
+    else:
+        print(f"Nenhuma vaga encontrada para a zona '{zone}'.")
+
+if __name__ == "__main__":
+    app()
+
+
+
+
+@app.command()
+def salary(job_id: int, export_csv: bool = False):
+    """
+    Extrai o salário oferecido para um determinado job id.
+    """
+    try:
+        print(f"A procurar as informações de salário para o job id: {job_id}...")
+
+        headers = {
+            "User-Agent": "jobs-cli"  
+        }
+
+        # Faz a requisição para a API
+        response = requests.get(
+            BASE_URL2.format(job_id=job_id),
+            headers=headers,
+            params={"api_key": API_KEY}
+        )
+
+        # Verifica se a requisição foi bem-sucedida
+        response.raise_for_status()
+        data = response.json()
+
+        job = data.get("results", [])[0]
+
+        wage = job.get("wage")
+        body = job.get("body", "")
+
+        salary_data = {
+            "salary": wage if wage else "Não especificado"
+        }
+
+        # Expressão regular para buscar possíveis menções a salários no corpo da descrição
+        salary_matches = re.findall(
+            r'(\d{1,3}(?:\.\d{3})*,?\d{0,2}\s*(?:EUR|€|euro|euros|k))', body, re.IGNORECASE
+        )
+
+        if salary_matches:
+            salary_data["salary_matches"] = ", ".join(salary_matches)
+
+        if export_csv:
+            export_to_csv([salary_data], "salary_jobs.csv")
+
+        print(json.dumps(salary_data, indent=2, ensure_ascii=False))
+
+    except requests.RequestException as e:
+        print(f"Erro ao acessar a API: {e}")
+    except Exception as e:
+        print(f"Erro inesperado: {e}")
+
+@app.command()
+def skills(skills: str, data_inicial: str, data_final: str, export_csv: bool = False):
+    """
+    Mostra quais os trabalhos que requerem uma determinada lista de skills em um período de tempo.
+    Recebe uma lista de skills e um intervalo de datas (data_inicial e data_final).
+    """
+    try:
+        # Remover os colchetes e dividir a string para criar uma lista de skills
+        skills = skills.strip("[]").split(",")
+        skills_list = [skill.strip().lower() for skill in skills]  # Remover espaços extras das skills e garantir que tudo seja minúsculo
+
+        # Validar se a skills_list é uma lista não vazia
+        if not skills_list or not isinstance(skills_list, list):
+            print("Erro: A lista de skills deve ser uma lista válida.")
+            return
+
+        # Convertendo as datas para o formato datetime
+        start_date = datetime.datetime.strptime(data_inicial, "%Y-%m-%d")
+        end_date = datetime.datetime.strptime(data_final, "%Y-%m-%d")
+
+        # Validar as datas
+        if start_date > end_date:
+            print("Erro: A data inicial não pode ser posterior à data final.")
+            return
+
+        headers = {"User-Agent": "jobs-cli"}
+        response = requests.get(BASE_URL, params={"api_key": API_KEY}, headers=headers)
+
+        response.raise_for_status()
+        jobs = response.json().get("results", [])
+
+        # Filtrar os trabalhos que têm as skills e estão dentro do período de tempo
+        filtered_jobs = []
+        for job in jobs:
+            job_date_str = job.get("publishedAt", "").split(" ")[0]  # Pegar a data sem hora
+            if job_date_str:
+                try:
+                    job_date = datetime.datetime.strptime(job_date_str, "%Y-%m-%d")
+                except ValueError:
+                    continue  # Caso a data esteja no formato errado, ignore o trabalho
+            else:
+                continue  # Caso não tenha data, ignore o trabalho
+
+            # Procurar por skills no corpo da descrição do trabalho
+            job_body = job.get("body", "").lower()  # Garantir que o texto do corpo esteja em minúsculas
+
+            # Verificar se todas as skills estão presentes no corpo da descrição
+            if all(skill in job_body for skill in skills_list) and start_date <= job_date <= end_date:
+                filtered_jobs.append(job)
+
+        # Exibir os resultados em formato JSON
+        if not filtered_jobs:
+            print("Nenhum trabalho encontrado para as skills e período especificados.")
+            return
+
+        if export_csv:
+            export_to_csv(filtered_jobs, "filtered_jobs.csv")
+
+        # Exibir os resultados em formato mais legível
+        for job in filtered_jobs:
+            job_id = job.get('id', 'N/A')
+            title = job.get('title', 'N/A')
+            company = job.get('company', {}).get('name', 'N/A')
+            description = job.get('body', 'N/A')
+            publication_date = job.get('publishedAt', 'N/A').split(' ')[0]
+            salary = job.get('wage', 'N/A')
+            location = ', '.join(location['name'] for location in job.get('locations', []))
+
+            print(f"ID do Trabalho: {job_id}")
+            print(f"Título: {title}")
+            print(f"Empresa: {company}")
+            print(f"Descrição: {description}")
+            print(f"Data de Publicação: {publication_date}")
+            print(f"Salário: {salary}")
+            print(f"Localização: {location}")
+            print("-" * 50)
+
+    except requests.RequestException as e:
+        print(f"Erro ao acessar a API: {e}")
+    except Exception as e:
+        print(f"Erro inesperado: {e}")
+
+
+
+def export_to_csv(jobs, filename):
+    """Exporta a lista de jobs para um arquivo CSV."""
+    with open(filename, mode="w", newline="", encoding="utf-8") as file:
+        writer = csv.writer(file)
+        # Adicionar cabeçalho baseado nos campos do job
+        writer.writerow(["titulo", "empresa", "descrição", "data de publicação", "skills"])
+
+        for job in jobs:
+            skills = [skill["name"] for skill in job.get("skills", [])]
+            writer.writerow([
+                job.get("title", "N/A"),
+                job.get("company", {}).get("name", "N/A"),
+                job.get("body", "N/A"),
+                job.get("date", "N/A"),
+                ", ".join(skills)
+            ])
+        typer.echo(f"Dados exportados para {filename}")
+
+def export_to_csv(jobs, filename):
+    """Exporta a lista de jobs para um arquivo CSV."""
+    with open(filename, mode="w", newline="", encoding="utf-8") as file:
+        writer = csv.writer(file)
+        # Adicionar cabeçalho baseado nos campos do job
+        if filename == "salary_jobs.csv":
+            writer.writerow(["job_id", "title", "company", "location", "description", "salary", "salary_matches"])
+        else:
+            writer.writerow(["titulo", "empresa", "descrição", "data de publicação", "salário", "localização"])
+
+        for job in jobs:
+            writer.writerow([
+                job.get("job_id", "N/A"),
+                job.get("title", "N/A"),
+                job.get("company", "N/A"),
+                job.get("location", "N/A"),
+                job.get("description", "N/A"),
+                job.get("salary", "N/A"),
+                job.get("salary_matches", "N/A")  # Para salary_jobs.csv
+            ])
+        typer.echo(f"Dados exportados para {filename}")
+
+if __name__ == "__main__":
+    app()
