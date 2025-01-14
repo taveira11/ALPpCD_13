@@ -1,3 +1,4 @@
+from pkgutil import get_data
 import requests
 from bs4 import BeautifulSoup
 import typer
@@ -9,7 +10,7 @@ from collections import defaultdict
 from collections import Counter
 from playwright.sync_api import sync_playwright
 import math
-
+from typing import Annotated, Optional
 
 app = typer.Typer()
 
@@ -29,22 +30,6 @@ HEADERS = {
         "Sec-Fetch-Site": "none",
         "Sec-Fetch-User": "?1",
         "Cache-Control": "max-age=0"}
-
-
-def request_website(BASE_URL2):
-    try:
-        response = requests.get(BASE_URL2, headers=HEADERS)
-
-        if response.status_code == 200:
-            soup = BeautifulSoup(response.text, "lxml")
-            return soup
-        else:
-            print(f"Erro {response.status_code}")
-            return None
-
-    except requests.exceptions.RequestException as e:
-        print(f"Erro na requisição: {e}")
-        return None
 
 
 def request_api(metodo, params):
@@ -90,7 +75,7 @@ def request_api(metodo, params):
             print(f"Erro ao acessar a API: {response.status_code}")
             return {}
 
-
+#a
 def fetch_job_details(job_id: int):
     """
     Busca detalhes de um trabalho usando a API ITJobs.
@@ -184,70 +169,8 @@ def get(job_id: int = typer.Argument(..., help="ID do trabalho a ser consultado"
             writer.writerow(result)
         typer.echo(f"Informações exportadas para job_{job_id}_details.csv")
 
-
+#b
 # Função para buscar informações da empresa no AmbitionBox
-def fetch_page_content(page_number):
-    """Faz uma requisição HTTP e retorna o conteúdo da página."""
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/90.0 Safari/537.36"
-    }
-    params = {"page": page_number}
-    response = requests.get(BASE_URL, headers=headers, params=params)
-    if response.status_code == 200:
-        return response.content
-    else:
-        print(f"Erro ao acessar a página {page_number}: {response.status_code}")
-        return None
-
-def parse_job_links(page_content):
-    """Extrai os links das vagas disponíveis na página."""
-    soup = BeautifulSoup(page_content, "html.parser")
-    job_links = []
-    for meta_tag in soup.find_all("meta", {"itemprop": "url"}):
-        if meta_tag.get("content"):
-            job_links.append(meta_tag["content"])
-    return job_links
-
-def extract_job_details(job_url):
-    """Coleta os detalhes de uma vaga específica."""
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/90.0 Safari/537.36"
-    }
-    response = requests.get(job_url, headers=headers)
-    if response.status_code == 200:
-        soup = BeautifulSoup(response.content, "html.parser")
-        try:
-            title = soup.select_one("h1.desig.bold-title").text.strip()
-            location = soup.select_one("div.entity.loc p.body-small-l").text.strip()
-            vacancies = soup.select_one("div.entity.vacancy p.body-small-l").text.strip()
-            vacancy_count = int(vacancies.split()[0])
-            return title, location, vacancy_count
-        except AttributeError:
-            print(f"Detalhes não encontrados para {job_url}")
-            return None
-    else:
-        print(f"Erro ao acessar {job_url}: {response.status_code}")
-        return None
-
-def consolidate_job_data(job_data):
-    """Consolida as informações das vagas em um formato agrupado."""
-    summary = {}
-    for location, title, vacancies in job_data:
-        key = (location, title)
-        if key in summary:
-            summary[key] += vacancies
-        else:
-            summary[key] = vacancies
-    return summary
-
-def save_to_csv(data, filename="job_statistics.csv"):
-    """Salva os dados consolidados em um arquivo CSV."""
-    with open(filename, mode="w", newline="", encoding="utf-8") as csvfile:
-        writer = csv.writer(csvfile)
-        writer.writerow(["Zona", "Tipo de Trabalho", "Nº de Vagas"])
-        for (location, title), vacancies in data.items():
-            writer.writerow([location, title, vacancies])
-    print(f"Arquivo {filename} gerado com sucesso!")
 
 @app.command()
 def statistics(region: str):
@@ -288,209 +211,94 @@ if __name__ == "__main__":
     app()
 
 
-
-
-@app.command()
-def salary(job_id: int, export_csv: bool = False):
+def fetch_job_details(job_id: int):
     """
-    Extrai o salário oferecido para um determinado job id.
+    Busca detalhes de um trabalho usando a API ITJobs.
     """
+    url = f"https://api.itjobs.pt/job/get.json?api_key={API_KEY}&id={job_id}"
     try:
-        print(f"A procurar as informações de salário para o job id: {job_id}...")
-
-        headers = {
-            "User-Agent": "jobs-cli"  
-        }
-
-        # Faz a requisição para a API
-        response = requests.get(
-            BASE_URL2.format(job_id=job_id),
-            headers=headers,
-            params={"api_key": API_KEY}
-        )
-
-        # Verifica se a requisição foi bem-sucedida
+        response = requests.get(url, headers=HEADERS)
         response.raise_for_status()
-        data = response.json()
+        return response.json()
+    except requests.RequestException as e:
+        typer.echo(f"Erro ao acessar a API ITJobs: {e}")
+        return None
 
-        job = data.get("results", [])[0]
+def fetch_indeed_company_info(company_name: str):
+    """
+    Obtém informações sobre a empresa usando a página de overview do Indeed.
+    """
+    company_slug = company_name.lower().replace(" ", "-").replace(".", "-")
+    url = f"https://www.indeed.com/cmp/{company_slug}"
 
-        wage = job.get("wage")
-        body = job.get("body", "")
+    try:
+        response = requests.get(url, headers=HEADERS)
+        if response.status_code != 200:
+            typer.echo(f"Erro ao acessar {url}. Status Code: {response.status_code}")
+            return {
+                "rating": "N/A",
+                "review_count": "N/A",
+                "benefits": "Informações indisponíveis"
+            }
 
-        salary_data = {
-            "salary": wage if wage else "Não especificado"
+        soup = BeautifulSoup(response.content, 'html.parser')
+
+        # Procurar rating
+        rating_tag = soup.find("meta", {"name": "ratingValue"})
+        rating = rating_tag["content"] if rating_tag else "N/A"
+
+        # Procurar número de reviews
+        review_tag = soup.find("meta", {"name": "reviewCount"})
+        review_count = review_tag["content"] if review_tag else "N/A"
+
+        # Procurar benefícios
+        benefits_section = soup.find("div", class_="css-1qibq6a")
+        benefits = benefits_section.text.strip() if benefits_section else "Informações indisponíveis"
+
+        return {
+            "rating": rating,
+            "review_count": review_count,
+            "benefits": benefits
         }
-
-        # Expressão regular para buscar possíveis menções a salários no corpo da descrição
-        salary_matches = re.findall(
-            r'(\d{1,3}(?:\.\d{3})*,?\d{0,2}\s*(?:EUR|€|euro|euros|k))', body, re.IGNORECASE
-        )
-
-        if salary_matches:
-            salary_data["salary_matches"] = ", ".join(salary_matches)
-
-        if export_csv:
-            export_to_csv([salary_data], "salary_jobs.csv")
-
-        print(json.dumps(salary_data, indent=2, ensure_ascii=False))
 
     except requests.RequestException as e:
-        print(f"Erro ao acessar a API: {e}")
-    except Exception as e:
-        print(f"Erro inesperado: {e}")
+        typer.echo(f"Erro ao acessar o Indeed: {e}")
+        return {
+            "rating": "N/A",
+            "review_count": "N/A",
+            "benefits": "Informações indisponíveis"
+        }
 
-
-
-
-
-
-
-
- 
-
-def export_to_csv(jobs, filename):
-    """Exporta a lista de jobs para um arquivo CSV."""
-    with open(filename, mode="w", newline="", encoding="utf-8") as file:
-        writer = csv.writer(file)
-        # Adicionar cabeçalho baseado nos campos do job
-        if filename == "salary_jobs.csv":
-            writer.writerow(["job_id", "title", "company", "location", "description", "salary", "salary_matches"])
-        else:
-            writer.writerow(["titulo", "empresa", "descrição", "data de publicação", "salário", "localização"])
-
-        for job in jobs:
-            writer.writerow([
-                job.get("job_id", "N/A"),
-                job.get("title", "N/A"),
-                job.get("company", "N/A"),
-                job.get("location", "N/A"),
-                job.get("description", "N/A"),
-                job.get("salary", "N/A"),
-                job.get("salary_matches", "N/A")  # Para salary_jobs.csv
-            ])
-        typer.echo(f"Dados exportados para {filename}")
-
-if __name__ == "__main__":
-    app()
-
-
-
-
-# Define o comando para listar habilidades
-@app.command()
-def list_skills(job_title: str):
+@app.command("get2")  # Adicionado este decorator
+def get2(job_id: int = typer.Argument(..., help="ID do trabalho a ser consultado"), export_csv: bool = False):
     """
-    Coleta as 10 principais habilidades relacionadas a uma vaga específica no AmbitionBox.
-    Exemplo de uso: python jobscli.py list_skills "data scientist"
+    Busca informações de um trabalho usando o ITJobs e complementa com dados da empresa no Indeed.
+    
+    Arguments:
+        job_id: ID do trabalho a ser consultado.
+        export_csv: Se verdadeiro, salva os resultados em um arquivo CSV.
     """
-    base_url = "https://www.ambitionbox.com/jobs/search"
-    search_url = f"{base_url}?tag={job_title.replace(' ', '%20')}"
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+    job_details = fetch_job_details(job_id)
+    if not job_details or 'error' in job_details:
+        typer.echo(f"Trabalho com ID {job_id} não encontrado.")
+        return
+
+    company_name = job_details.get("company", {}).get("name", "N/A")
+    company_info = fetch_indeed_company_info(company_name)
+
+    result = {
+        "job_id": job_id,
+        "title": job_details.get("title", "N/A"),
+        "company": company_name,
+        "location": job_details.get("locations", [{}])[0].get("name", "N/A"),
+        **company_info
     }
 
-    try:
-        response = requests.get(search_url, headers=headers)
-        response.raise_for_status()
+    typer.echo(json.dumps(result, indent=4, ensure_ascii=False))
 
-        soup = BeautifulSoup(response.text, "html.parser")
-        job_links = [
-            "https://www.ambitionbox.com" + a["href"]
-            for a in soup.find_all("a", class_="title noclick")
-        ]
-
-        if not job_links:
-            typer.echo("Nenhum trabalho encontrado para essa vaga.")
-            return
-
-        all_skills = []
-
-        for link in job_links:
-            try:
-                job_response = requests.get(link, headers=headers)
-                job_response.raise_for_status()
-
-                job_soup = BeautifulSoup(job_response.text, "html.parser")
-                skills = [
-                    skill.text.strip()
-                    for skill in job_soup.find_all("a", class_="chip")
-                ]
-                all_skills.extend(skills)
-
-            except requests.exceptions.RequestException as e:
-                typer.echo(f"Erro ao acessar os detalhes da vaga: {link} - {e}")
-                continue
-
-        skill_counter = Counter(all_skills)
-        top_skills = skill_counter.most_common(10)
-
-        output = [{"skill": skill, "count": count} for skill, count in top_skills]
-        print(json.dumps(output, indent=4))
-
-    except requests.exceptions.RequestException as e:
-        typer.echo(f"Erro ao acessar a página principal: {e}")
-
-if __name__ == "__main__":
-    app()
-
-
-
-
-def get_top_skills(job_url):
-    try:
-        response = requests.get(job_url, headers=HEADERS)
-        response.raise_for_status()
-
-        soup = BeautifulSoup(response.content, "html.parser")
-
-        job_cards = soup.find_all("div", class_="jobInfoCard")
-        skill_counts = {}
-
-        for card in job_cards:
-            details_link = card.find("a", class_="title noclick")
-            if details_link:
-                job_details_url = "https://www.ambitionbox.com" + details_link["href"]
-
-                try:
-                    details_response = requests.get(job_details_url, headers=HEADERS)
-                    details_response.raise_for_status()
-
-                    details_soup = BeautifulSoup(details_response.content, "html.parser")
-                    skills_section = details_soup.find("div", class_="jd-insights")
-
-                    if skills_section:
-                        skills = skills_section.find_all("a", class_="chip")
-                        for skill in skills:
-                            skill_name = skill.text.strip()
-                            skill_counts[skill_name] = skill_counts.get(skill_name, 0) + 1
-                except requests.exceptions.RequestException as e:
-                    typer.echo(f"Erro ao buscar detalhes do trabalho em {job_details_url}: {e}")
-                    continue
-
-        # Ordenar habilidades por frequência e retornar as 10 principais
-        top_skills = dict(sorted(skill_counts.items(), key=lambda item: item[1], reverse=True)[:10])
-        return top_skills
-
-    except requests.exceptions.RequestException as e:
-        typer.echo(f"Erro ao buscar os trabalhos: {e}")
-        return {}
-
-@app.command()
-def skills(job_title: str):
-    job_url = f"https://www.ambitionbox.com/jobs/search?tag={job_title.replace(' ', '%20')}"
-    typer.echo(f"A ver skills para: {job_title}")
-
-    top_skills = get_top_skills(job_url)
-
-    if top_skills:
-        typer.echo(json.dumps({"top_skills": top_skills}, ensure_ascii=False))
-
-        
-        save = typer.confirm("Deseja salvar as informações no arquivo CSV?")
-        if save:
-            save_to_csv(top_skills, f"{job_title}_top_skills.csv")
-        else:
-            typer.echo("Informações não foram salvas.")
-    else:
-         typer.echo(json.dumps({"error": "Não foi possível encontrar as skills."}))
+    if export_csv:
+        with open(f"job_{job_id}_indeed_details.csv", "w", newline="", encoding="utf-8") as csvfile:
+            writer = csv.DictWriter(csvfile, fieldnames=result.keys())
+            writer.writeheader()
+            writer.writerow(result)
+        typer.echo(f"Informações exportadas para job_{job_id}_indeed_details.csv")
